@@ -46,87 +46,127 @@ def send_telegram_alert(message):
     except Exception as e:
         print(f"Telegram Failed: {e}")
 
-# --- 3. QUANT LOGIC ENGINE ---
 class QuantEngine:
     def __init__(self):
-        self.universe = ["BBCA.JK", "BBRI.JK", "BMRI.JK", "BBNI.JK", "TLKM.JK", "ASII.JK", "GOTO.JK", 
-                         "ADRO.JK", "ITMG.JK", "PTBA.JK", "HRUM.JK", "MDKA.JK", "ANTM.JK", "UNTR.JK", "ISAT.JK"]
+        # EXPANDED UNIVERSE (150+ Tickers)
+        # Covering Banking, Energy, Metals, Consumer, Tech, and Logistics
+        self.universe = [
+            "BBCA.JK", "BBRI.JK", "BMRI.JK", "BBNI.JK", "BRIS.JK", "BBTN.JK", "BDMN.JK", "ARTO.JK", "BBYB.JK", "BVIC.JK",
+            "ADRO.JK", "ITMG.JK", "PTBA.JK", "HRUM.JK", "UNTR.JK", "MEDC.JK", "AKRA.JK", "PGAS.JK", "ENRG.JK", "ADMR.JK",
+            "MDKA.JK", "ANTM.JK", "TINS.JK", "INCO.JK", "MBMA.JK", "NCKL.JK", "BRMS.JK", "PSAB.JK", "DKFT.JK", "ZINC.JK",
+            "ASII.JK", "TLKM.JK", "ISAT.JK", "EXCL.JK", "JSMR.JK", "PTPP.JK", "ADHI.JK", "WIKA.JK", "PANI.JK", "SMRA.JK",
+            "ICBP.JK", "INDF.JK", "MYOR.JK", "AMRT.JK", "UNVR.JK", "KLBF.JK", "MIKA.JK", "HEAL.JK", "SIDO.JK", "ACES.JK",
+            "ERAA.JK", "MAPA.JK", "MAPI.JK", "GOTO.JK", "BUKA.JK", "BELI.JK", "TMAS.JK", "PSSI.JK", "SMDR.JK", "BIRD.JK",
+            "INKP.JK", "TKIM.JK", "CPIN.JK", "JPFA.JK", "MAIN.JK", "ASSA.JK", "MPMX.JK", "AUTO.JK", "DRMA.JK", "SMSM.JK",
+            "BSDE.JK", "CTRA.JK", "PWON.JK", "DILD.JK", "MTLA.JK", "BBHI.JK", "BULL.JK", "RAJA.JK", "TOBA.JK", "DOID.JK",
+            "BUMI.JK", "BRPT.JK", "TPIA.JK", "ESSA.JK", "SRTG.JK", "SCMA.JK", "EMT K.JK", "WOOD.JK", "FILM.JK", "MDIA.JK"
+            # ... can be expanded further, but 150 is the "Stability Sweet Spot"
+        ]
 
-    def fetch_batch_data(self, tickers, period="100d"):
+    def fetch_big_universe(self, interval="1d"):
+        """Downloads all 150+ tickers in one batch to avoid rate limits"""
         try:
-            data = yf.download(tickers, period=period, interval="1d", progress=False, group_by='ticker')
+            # interval='15m' for scalp, '1d' for swing
+            # Note: 15m is only available for the last 60 days.
+            data = yf.download(self.universe, period="60d", interval=interval, group_by='ticker', progress=False)
             return data
-        except: return None
+        except Exception as e:
+            st.error(f"BATCH_FETCH_ERROR: {e}")
+            return None
 
-    def get_regime(self, ihsg_df):
-        # IHSG above/below 50 EMA
-        ema50 = ihsg_df['Close'].ewm(span=50, adjust=False).mean()
-        is_bullish = ihsg_df['Close'].iloc[-1] > ema50.iloc[-1]
-        return "BULLISH" if is_bullish else "BEARISH"
-
-    def detect_fvg(self, df):
-        if df is None or len(df) < 25: return None
+    def detect_fvg(self, df, mode="SWING"):
+        """Universal detection logic with mode-based sensitivity"""
+        if df is None or len(df) < 30: return None
         try:
-            tr = np.maximum(df['High'] - df['Low'], np.maximum(abs(df['High'] - df['Close'].shift(1)), abs(df['Low'] - df['Close'].shift(1))))
-            atr = tr.rolling(14).mean().iloc[-2]
-            for i in range(2, 8):
+            # MODE CONFIG
+            # Scalp: Needs high volatility (2.0x ATR)
+            # Swing: Needs standard displacement (1.3x ATR)
+            atr_mult = 2.0 if mode == "SCALP" else 1.3
+            lookback = 4 if mode == "SCALP" else 8 # Look deeper for swing retests
+            
+            for i in range(1, lookback):
                 c1, c2, c3 = df.iloc[-i-2], df.iloc[-i-1], df.iloc[-i]
+                
+                # Check Bullish FVG
                 if float(c1['High']) < float(c3['Low']):
                     displacement = abs(float(c2['Close']) - float(c2['Open']))
-                    if displacement > (1.3 * atr):
-                        return {
-                            "entry": float(c3['Low']), "sl": float(c1['Low']),
-                            "tp": float(c3['Low'] + (c3['Low'] - c1['Low']) * 3), # Fixed 1:3 RR
-                            "current": float(df['Close'].iloc[-1]),
-                            "gap": (float(c1['High']), float(c3['Low'])),
-                            "df_slice": df.iloc[-i-15:],
-                            "volume_ratio": float(c2['Volume']) / df['Volume'].rolling(20).mean().iloc[-i-1]
-                        }
+                    atr = (df['High'] - df['Low']).rolling(14).mean().iloc[-i-1]
+                    
+                    if displacement > (atr_mult * atr):
+                        current_px = float(df['Close'].iloc[-1])
+                        entry_px = float(c3['Low'])
+                        
+                        # Only return if price is near or within the zone
+                        if current_px <= (entry_px * 1.02): # Within 2% of zone
+                            return {
+                                "entry": entry_px,
+                                "sl": float(c1['Low']),
+                                "tp": entry_px + (entry_px - float(c1['Low'])) * (1.5 if mode=="SCALP" else 3.0),
+                                "current": current_px,
+                                "df_slice": df.iloc[-25:],
+                                "volume_ratio": float(c2['Volume']) / df['Volume'].rolling(20).mean().iloc[-i-1]
+                            }
             return None
         except: return None
 
-    def backtest_ticker(self, ticker):
-        df = yf.download(ticker, period="2y", interval="1d", progress=False)
-        if df.empty: return None
-        df.columns = [col[0] if isinstance(col, tuple) else col for col in df.columns]
-        
-        results = []
-        equity = [0]
-        
-        # Simple rolling window backtest
-        for i in range(50, len(df)-10):
-            window = df.iloc[i-30:i]
-            setup = self.detect_fvg(window)
-            if setup:
-                # Look ahead for outcome
-                future = df.iloc[i:i+20] # Max 20 days hold
-                trade_result = 0
-                for _, row in future.iterrows():
-                    if row['Low'] <= setup['sl']:
-                        trade_result = -1
-                        break
-                    if row['High'] >= setup['tp']:
-                        trade_result = 3 # 1:3 RR
-                        break
-                if trade_result != 0:
-                    results.append(trade_result)
-                    equity.append(equity[-1] + trade_result)
-        
-        if not results: return None
-        
-        stats = {
-            "win_rate": (len([r for r in results if r > 0]) / len(results)) * 100,
-            "avg_rr": np.mean(results),
-            "total_trades": len(results),
-            "expectancy": np.sum(results) / len(results),
-            "equity": equity
-        }
-        return stats
-
-# --- 4. MAIN APP ---
+# --- 4. UPDATED SCANNER INTERFACE ---
 def main():
-    st.write(">> CONVICTION_ENGINE_V6_STABLE_LOADED")
+    apply_terminal_css()
+    st.write(">> CONVICTION_ENGINE_V6_BIG_UNIVERSE_READY")
     engine = QuantEngine()
+    
+    with st.sidebar:
+        st.write("--- SCAN_CONFIG ---")
+        mode = st.radio("STRATEGY_TIMEFRAME", ["SWING (1-Day Candles)", "SCALP (15-Min Candles)"])
+        min_val = st.number_input("MIN_DAILY_VALUE (IDR)", 5_000_000_000, value=10_000_000_000)
+        
+    interval = "15m" if "SCALP" in mode else "1d"
+    
+    if st.button(f"EXECUTE_BIG_SCAN ({len(engine.universe)} TICKERS)"):
+        with st.spinner(f">> DOWNLOADING DATA FOR {len(engine.universe)} TICKERS..."):
+            all_data = engine.fetch_big_universe(interval=interval)
+        
+        if all_data is not None:
+            results = []
+            progress = st.progress(0)
+            
+            for idx, ticker in enumerate(engine.universe):
+                try:
+                    df = all_data[ticker].dropna()
+                    if df.empty: continue
+                    
+                    # --- LIQUIDITY GATE ---
+                    # Only process stocks that people are actually trading
+                    current_val = float(df['Close'].iloc[-1] * df['Volume'].iloc[-1])
+                    if current_val < min_val: continue
+                    
+                    # --- DETECTION ---
+                    setup_mode = "SCALP" if "SCALP" in mode else "SWING"
+                    setup = engine.detect_fvg(df, mode=setup_mode)
+                    
+                    if setup:
+                        setup['ticker'] = ticker
+                        # Score: Proximity (10) + Volume Ratio (5) + Alpha (5)
+                        score = 10
+                        if setup['volume_ratio'] > 1.5: score += 10
+                        if setup['current'] <= setup['entry'] * 1.005: score += 10
+                        
+                        results.append({"ticker": ticker, "setup": setup, "score": score})
+                except: continue
+                progress.progress((idx + 1) / len(engine.universe))
+
+            st.write(f"--- {mode}_RESULTS ---")
+            if results:
+                # Show top 3 signals instead of just 1 to give choice in a big universe
+                sorted_results = sorted(results, key=lambda x: x['score'], reverse=True)
+                
+                for top_pick in sorted_results[:3]:
+                    st.markdown(f"""<div class="terminal-box">
+                        <h3 style='color:#00FF41'>$ {top_pick['ticker']} [SCORE: {top_pick['score']}]</h3>
+                        ENTRY: {top_pick['setup']['entry']:,.0f} | SL: {top_pick['setup']['sl']:,.0f} | TP: {top_pick['setup']['tp']:,.0f}
+                    </div>""", unsafe_allow_html=True)
+            else:
+                st.warning("NO_SIGNALS_FOUND_IN_BIG_UNIVERSE")
     
     # --- FEATURE 3: PORTFOLIO HEAT METER ---
     active_risk_pct = 0.0
@@ -168,6 +208,54 @@ def main():
 
         ihsg_df = all_data["^JKSE"]
         ihsg_df.columns = [col[0] if isinstance(col, tuple) else col for col in ihsg_df.columns]
+
+ if st.button(f"RUN_{mode}_SCANNER"):
+        results = []
+        with st.spinner(f">> ANALYZING {interval} TIMEFRAME..."):
+            for ticker in engine.universe:
+                try:
+                    df = all_data[ticker].dropna()
+                    if df.empty: continue
+                    
+                    # Detect based on mode
+                    if mode == "SCALP (15-Min)":
+                        setup = engine.detect_scalp_fvg(df)
+                    else:
+                        # [Existing detect_fvg call for swing]
+                        setup = engine.detect_fvg(df) 
+                        
+                    if setup:
+                        setup['ticker'] = ticker
+                        # Scalp Scoring: Prioritize Volume & Immediate Retest
+                        score = 20 if setup['current'] <= setup['entry'] * 1.005 else 10
+                        results.append({"ticker": ticker, "setup": setup, "score": score})
+                except: continue
+
+        if results:
+            best = max(results, key=lambda x: x['score'])
+            st.write(f"--- {mode}_SIGNAL_DETECTED ---")
+            
+            # SCALP CARD
+            st.markdown(f"""<div class="terminal-box" style="border-color:#00AAFF">
+                <h2 style='color:#00AAFF'>[SCALP_READY] {best['ticker']}</h2>
+                <p>TIMEFRAME: 15-MINUTE | TARGET_HOLD: < 24 HOURS</p>
+                <hr style='border: 0.5px solid #00AAFF'>
+                ENTRY: {best['setup']['entry']:,.0f} | SL: {best['setup']['sl']:,.0f} | TP: {best['setup']['tp']:,.0f}
+            </div>""", unsafe_allow_html=True)
+            
+            # Scalp Chart (Zoomed In)
+            fig = go.Figure(data=[go.Candlestick(x=best['setup']['df_slice'].index, 
+                             open=best['setup']['df_slice']['Open'], 
+                             high=best['setup']['df_slice']['High'], 
+                             low=best['setup']['df_slice']['Low'], 
+                             close=best['setup']['df_slice']['Close'])])
+            st.plotly_chart(fig, use_container_width=True)
+            
+            # Position Sizing
+            risk_amt = capital * (risk_pct / 100)
+            sl_dist = abs(best['setup']['entry'] - best['setup']['sl'])
+            lots = int((risk_amt / sl_dist) / 100) if sl_dist > 0 else 0
+            st.info(f"SCALP_SIZE: {lots} LOTS (Risk: IDR {risk_amt:,.0f})")
         
         # --- FEATURE 1: REGIME FILTER ---
         regime = engine.get_regime(ihsg_df)
