@@ -187,4 +187,62 @@ def main():
                 <hr style='border: 0.5px solid #008F11'>
                 <b>JUSTIFICATION_LOG:</b><br>
                 • Relative Strength: {best['ticker']} is outperforming IHSG by {best['rs']*100:.2f}%.<br>
-                • RVOL: Volume is {best['rvol']
+                • RVOL: Volume is {best['rvol']:.2f}x higher than 20d average (Institutional Flow).<br>
+                • Price Action: Strong displacement candle (ATR > 1.3x) creating Bullish FVG.
+            </div>""", unsafe_allow_html=True)
+            
+            c1, c2 = st.columns([2, 1])
+            with c1:
+                # Evidence Chart
+                fig = go.Figure(data=[go.Candlestick(x=s['df_slice'].index, open=s['df_slice']['Open'], 
+                                 high=s['df_slice']['High'], low=s['df_slice']['Low'], close=s['df_slice']['Close'])])
+                fig.add_shape(type="rect", x0=s['df_slice'].index[0], x1=s['df_slice'].index[-1], 
+                             y0=s['gap_bounds'][0], y1=s['gap_bounds'][1], fillcolor="#00FF41", opacity=0.15, line_width=0)
+                fig.update_layout(template="plotly_dark", height=400, margin=dict(l=0,r=0,b=0,t=0), xaxis_rangeslider_visible=False)
+                st.plotly_chart(fig, use_container_width=True)
+            
+            with c2:
+                st.write("--- EXECUTION_PLAN ---")
+                st.write(f"ENTRY: {s['entry']:,.0f}")
+                st.write(f"STOP:  {s['sl']:,.0f}")
+                st.write(f"TAKE_PROFIT: {s['tp']:,.0f}")
+                # Sizing
+                risk_amt = capital * (risk_pct / 100)
+                lots = int((risk_amt / (s['entry'] - s['sl'])) / 100) if (s['entry'] - s['sl']) > 0 else 0
+                st.success(f"SIZE: {lots} LOTS")
+                
+                if st.button("CONFIRM_AND_LOG_TRADE"):
+                    if supabase:
+                        log_data = {"ticker": best['ticker'], "entry_price": s['entry'], "stop_loss": s['sl'], 
+                                    "take_profit": s['tp'], "position_size": lots, "status": "ACTIVE", 
+                                    "expiry_date": expiry.isoformat()}
+                        supabase.table("trades").insert(log_data).execute()
+                        st.balloons()
+        else:
+            st.warning("SYSTEM_MSG: NO TRADES MET CONVICTION_THRESHOLD_20")
+
+        # --- OUTPUT: REJECTION WATCHLIST ---
+        if watchlist:
+            st.write("--- NEAR_MISS_WATCHLIST (WAIT_FOR_RETEST) ---")
+            w_cols = st.columns(len(watchlist[:4]))
+            for i, item in enumerate(watchlist[:4]):
+                with w_cols[i]:
+                    st.markdown(f"""<div class="rejection-box">
+                        <b>$ {item['ticker']}</b><br>
+                        SCORE: {item['score']}/30<br>
+                        <small>ALPHA: {item['rs']*100:+.1f}%<br>
+                        RVOL: {item['rvol']:.1f}x</small>
+                    </div>""", unsafe_allow_html=True)
+
+    # 5. PERFORMANCE LOGS
+    st.divider()
+    st.write("--- GLOBAL_SYSTEM_HISTORY ---")
+    if supabase:
+        try:
+            history = supabase.table("trades").select("*").order("date", desc=True).execute().data
+            if history:
+                st.dataframe(pd.DataFrame(history)[['date', 'ticker', 'entry_price', 'status']], width=1200)
+        except: st.info("HISTORY_NOT_FOUND")
+
+if __name__ == "__main__":
+    main()
